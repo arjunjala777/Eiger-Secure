@@ -1,0 +1,55 @@
+from halcyon.store import Store
+
+INTERNAL_TOKEN_DISCLOSED = "internal_token_disclosed"
+POLICY_OVERRIDE = "policy_override"
+INPUT_FILTERED = "input_filtered"
+SYSTEM_PROMPT_DISCLOSED = "system_prompt_disclosed"
+XSS_BEACON = "xss_beacon"
+POISONED_CHUNK_IN_CONTEXT = "poisoned_chunk_in_context"
+RAG_INJECTION_FIRED = "rag_injection_fired"
+RESTRICTED_DOC_RETRIEVED = "restricted_doc_retrieved"
+RESTRICTED_DOC_DISCLOSED = "restricted_doc_disclosed"
+MALICIOUS_ARTIFACT_IDENTIFIED = "malicious_artifact_identified"
+VULNERABLE_DEPENDENCY_IDENTIFIED = "vulnerable_dependency_identified"
+TOOL_CALL = "tool_call"
+UNAUTHORIZED_TOOL_CALL = "unauthorized_tool_call"
+UNAUTHORIZED_ACCOUNT_MODIFICATION = "unauthorized_account_modification"
+MCP_POISONED_INVOCATION = "mcp_poisoned_invocation"
+MCP_DESC_MUTATION_ACCEPTED = "mcp_desc_mutation_accepted"
+TOKEN_READ = "token_read"
+INTER_AGENT_INJECTION_PROPAGATED = "inter_agent_injection_propagated"
+UNAUTHORIZED_APPROVAL = "unauthorized_approval"
+SUPERVISOR_PROVENANCE_BYPASSED = "supervisor_provenance_bypassed"
+GUARDRAIL_BYPASSED = "guardrail_bypassed"
+GUARDRAIL_HARDENED_BLOCK = "guardrail_hardened_block"
+GUARDRAIL_DECISION = "guardrail_decision"
+
+# S11 treasury-heist capstone (module "chain")
+INGEST_KEY_ACCEPTED = "ingest_key_accepted"
+POLICY_DOC_INGESTED = "policy_doc_ingested"
+POISONED_DOC_RETRIEVED = "poisoned_doc_retrieved"
+TREASURY_TRANSFER_EXECUTED = "treasury_transfer_executed"
+
+# Not a stage — a durable pass marker the chain validator writes to the
+# audit log itself, so a stored pass survives a stale re-validate (e.g. a
+# redeploy rotating the session's assigned attacker_account) but is still
+# genuinely retracted by a module_reset, which drops every event before it,
+# including this one.
+CHAIN_CORE_PASSED = "chain_core_passed"
+
+
+def record(
+    store: Store,
+    session_id: str,
+    module: str,
+    event_type: str,
+    actor: str,
+    details: dict | None = None,
+) -> None:
+    store.append_event(session_id, module, event_type, actor, details or {})
+
+
+def has_event(store: Store, session_id: str, module: str, event_type: str) -> bool:
+    return any(
+        e.event_type == event_type for e in store.events_since_reset(session_id, module)
+    )

@@ -1,0 +1,10 @@
+{
+  "scanner": "Eiger MCP Evidence-Based Security Scanner",
+  "version": "1.0.0",
+  "probes_executed": 4,
+  "probes_passed": 4,
+  "posture_score": 100,
+  "posture_grade": "A+",
+  "admission_status": "PASS",
+  "findings": []
+}

@@ -1,0 +1,28 @@
+# Optional overlay: requires an existing authenticated Wazuh manager.
+services:
+  wazuh-agent:
+    image: wazuh/wazuh-agent@sha256:db274c1e2c56106f108fa1469f7ee99995ad3cac41003e8ca7a975cda2af20d8
+    environment:
+      WAZUH_MANAGER_SERVER: ${WAZUH_MANAGER:?Set the manager hostname matching its certificate}
+      WAZUH_AGENT_NAME: eiger-blue-team
+    volumes:
+      - eiger_logs:/var/log/eiger:ro
+      - ./wazuh/agent/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      - wazuh_agent_state:/var/ossec/etc
+    secrets:
+      - wazuh_manager_ca
+      - wazuh_enrollment_password
+    networks: [telemetry]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+secrets:
+  wazuh_manager_ca:
+    file: ${WAZUH_MANAGER_CA_FILE:?Provide the trusted manager CA certificate file}
+  wazuh_enrollment_password:
+    file: ${WAZUH_ENROLLMENT_PASSWORD_FILE:?Provide the manager enrollment password file}
+networks:
+  telemetry: {}
+volumes:
+  wazuh_agent_state: {}

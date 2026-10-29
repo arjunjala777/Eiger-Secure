@@ -1,0 +1,48 @@
+[project]
+name = "halcyon"
+version = "0.1.0"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "httpx>=0.27",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "aiohttp>=3.14.5,<4",
+    "PyJWT>=2.14.0,<3",
+    "mcp>=1.28.1",
+    "langgraph>=1.2.9",
+    "litellm>=1.94.0",
+]
+
+[project.optional-dependencies]
+# Deliberately vulnerable, and deliberately OPTIONAL. Ray 2.51.0 carries
+# CVE-2025-62593, which CISA added to its Known Exploited Vulnerabilities
+# catalogue on 2026-08-17. It is here so a scanner has an actively-exploited CVE
+# to find in this repository. `uv sync` does NOT install extras by default, so
+# running Halcyon does not pull Ray.
+vulnerable-demo = ["ray==2.51.0"]
+blue-team = [
+    "jsonschema>=4.23",
+    "langchain-ollama>=0.3",
+    "nemoguardrails==0.24.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "calibration: real-embedding retrieval ladder; needs the baked ONNX model, excluded by default",
+]
+addopts = "-m 'not calibration'"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,7 @@
+{
+  "filename": "community_model.pkl",
+  "sha256": "22e1a204f515884ef978482e768a3022b7681a9813e109c84f7862fec5971b66",
+  "status": "removed",
+  "reason": "Static triage found posix.system, STACK_GLOBAL, and REDUCE opcodes. The executable pickle was removed from the repository and distribution.",
+  "safe_handling": "Do not recreate or deserialize the original artifact. The hash and static finding summary are retained for audit training only."
+}

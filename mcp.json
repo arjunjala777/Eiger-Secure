@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "mcp-core-banking": { "url": "http://mcp-core-banking:9001/mcp" },
+    "mcp-crm":          { "url": "http://mcp-crm:9002/mcp" }
+  }
+}

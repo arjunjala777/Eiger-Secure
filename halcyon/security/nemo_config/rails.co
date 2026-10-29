@@ -1,0 +1,14 @@
+define flow eiger input rail
+  $allowed = execute eiger_input_check(text=$user_message)
+  if not $allowed
+    bot refuse to respond
+    stop
+
+define flow eiger output rail
+  $allowed = execute eiger_output_check(text=$bot_message)
+  if not $allowed
+    bot refuse to respond
+    stop
+
+define bot refuse to respond
+  "This request cannot be processed under the banking security policy."

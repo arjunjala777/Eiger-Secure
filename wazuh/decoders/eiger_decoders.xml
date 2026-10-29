@@ -1,0 +1,2 @@
+<!-- Eiger emits plain JSON Lines. Use Wazuh's built-in json decoder.
+No custom decoder is required. Install the rules file on the manager. -->

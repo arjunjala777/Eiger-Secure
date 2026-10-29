@@ -1,0 +1,146 @@
+name: eiger-blue-team
+x-application: &application
+  build: .
+  image: eiger-blue-team:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  mem_limit: 3g
+  cpus: 2
+  volumes:
+    - eiger_logs:/app/logs
+    - model_inventory:/app/config
+  environment: &application-env
+    HALCYON_MODE: secure
+    HALCYON_PROFILE: production
+    HALCYON_SESSION_SECRET: ${HALCYON_SESSION_SECRET:?Set a random session secret}
+    HALCYON_MCP_CORE_TOKEN: ${HALCYON_MCP_CORE_TOKEN:?Set a distinct banking token}
+    HALCYON_MCP_CRM_TOKEN: ${HALCYON_MCP_CRM_TOKEN:?Set a distinct CRM token}
+    HALCYON_MCP_CORE_DELEGATION_SECRET: ${HALCYON_MCP_CORE_DELEGATION_SECRET:?Set a distinct core delegation key}
+    HALCYON_MCP_CRM_DELEGATION_SECRET: ${HALCYON_MCP_CRM_DELEGATION_SECRET:?Set a distinct CRM delegation key}
+    OIDC_ISSUER: ${OIDC_ISSUER:?Set the trusted OIDC issuer}
+    OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set the Eiger OIDC audience}
+    OIDC_JWKS_URL: ${OIDC_JWKS_URL:?Set the issuer JWKS URL}
+    EIGER_ALLOWED_ORIGINS: ${EIGER_ALLOWED_ORIGINS:?Set exact HTTPS browser origins}
+    EIGER_OLLAMA_GATEWAY_TOKEN: ${EIGER_OLLAMA_GATEWAY_TOKEN:?Set the inference gateway token}
+    DATABASE_URL: postgresql://eiger:${POSTGRES_PASSWORD:?Use a URL-safe random database password}@postgres:5432/eiger
+    OLLAMA_URL: http://ollama-gateway:11435
+    EIGER_TRUSTED_OLLAMA_URL: http://ollama-gateway:11435
+    LLAMA_GUARD_MODEL: llama-guard3:1b
+    EIGER_GUARD_MODE: ${EIGER_GUARD_MODE:-enforce}
+    EIGER_MODEL_MANIFEST: /app/config/models.json
+    EIGER_WAZUH_LOG_PATH: /app/logs/wazuh_security_events.json
+    EIGER_KB_PATH: /app/data/eiger-kb.sqlite3
+    MCP_CORE_URL: http://mcp-core:9001/mcp
+    MCP_CRM_URL: http://mcp-crm:9002/mcp
+  networks: [backend]
+  depends_on:
+    postgres: {condition: service_healthy}
+    ollama-gateway: {condition: service_started}
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+
+services:
+  eiger-app:
+    <<: *application
+    ports: ['127.0.0.1:8000:8000']
+    volumes:
+      - eiger_logs:/app/logs
+      - model_inventory:/app/config
+      - eiger_data:/app/data
+    networks: [ingress, backend]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready',timeout=5).read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
+  mcp-core:
+    <<: *application
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health',timeout=3).read()"]
+    command: [/app/.venv/bin/uvicorn, 'halcyon.mcp_deploy:CORE_ASGI', --host, 0.0.0.0, --port, '9001']
+    networks: [backend]
+    environment:
+      HALCYON_MODE: secure
+      HALCYON_PROFILE: production
+      HALCYON_MCP_CORE_TOKEN: ${HALCYON_MCP_CORE_TOKEN:?Set a distinct banking token}
+      HALCYON_MCP_CORE_DELEGATION_SECRET: ${HALCYON_MCP_CORE_DELEGATION_SECRET:?Set a distinct core delegation key}
+      DATABASE_URL: postgresql://eiger:${POSTGRES_PASSWORD:?Use a URL-safe random database password}@postgres:5432/eiger
+    volumes: [eiger_logs:/app/logs]
+  mcp-crm:
+    <<: *application
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9002/health',timeout=3).read()"]
+    command: [/app/.venv/bin/uvicorn, 'halcyon.mcp_deploy:CRM_ASGI', --host, 0.0.0.0, --port, '9002']
+    networks: [backend]
+    environment:
+      HALCYON_MODE: secure
+      HALCYON_PROFILE: production
+      HALCYON_MCP_CRM_TOKEN: ${HALCYON_MCP_CRM_TOKEN:?Set a distinct CRM token}
+      HALCYON_MCP_CRM_DELEGATION_SECRET: ${HALCYON_MCP_CRM_DELEGATION_SECRET:?Set a distinct CRM delegation key}
+      DATABASE_URL: postgresql://eiger:${POSTGRES_PASSWORD:?Use a URL-safe random database password}@postgres:5432/eiger
+    volumes: [eiger_logs:/app/logs]
+  ollama-gateway:
+    build: .
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11435/health',timeout=3).read()"]
+    image: eiger-blue-team:local
+    command: [/app/.venv/bin/uvicorn, 'halcyon.ollama_gateway:app', --host, 0.0.0.0, --port, '11435']
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    environment:
+      EIGER_MODEL_MANIFEST: /app/config/models.json
+      OLLAMA_UPSTREAM_URL: http://ollama:11434
+      EIGER_OLLAMA_GATEWAY_TOKEN: ${EIGER_OLLAMA_GATEWAY_TOKEN:?Set the inference gateway token}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      LLAMA_GUARD_MODEL: ${LLAMA_GUARD_MODEL:-llama-guard3:1b}
+      EIGER_OLLAMA_MODELS: ${EIGER_OLLAMA_MODELS:-llama3.1:8b,llama-guard3:1b}
+    volumes: [model_inventory:/app/config:ro]
+    networks: [backend, models]
+    depends_on:
+      ollama: {condition: service_started}
+  postgres:
+    image: postgres@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: eiger
+      POSTGRES_DB: eiger
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a URL-safe random database password}
+    volumes: [ledger_data:/var/lib/postgresql/data]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U eiger -d eiger']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  ollama:
+    image: ollama/ollama@sha256:dea72d1e22270fe095b68fdf756d2b489d615643c5a2eaebbc5f569181e322d8
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes: [ollama_data:/root/.ollama:ro]
+    networks: [models]
+    mem_limit: 10g
+    pids_limit: 256
+
+networks:
+  ingress: {}
+  backend: {internal: true}
+  models: {internal: true}
+volumes:
+  eiger_logs: {}
+  model_inventory: {}
+  ledger_data: {}
+  eiger_data: {}
+  ollama_data: {}

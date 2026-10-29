@@ -1,0 +1,108 @@
+import logging
+import os
+from pathlib import Path
+
+from halcyon import bank_fixtures, crm_fixtures, kb_fixtures, treasury_corpus
+from halcyon.config import load_settings
+from halcyon.llm import build_llm, build_tool_llm
+from halcyon.mcp_config import load_mcp_servers
+from halcyon.mcp_host import http_host, in_memory_host
+from halcyon.mcp_vault import SERVER_CORE, SERVER_CRM, TokenVault
+from halcyon.pg_store import PostgresStore, init_schema
+from halcyon.session_resources import BankProvider, KBProvider, slug, treasury_collection
+from halcyon.sqlite_kb import SQLiteKB
+from halcyon.treasury_state import TreasuryProvider
+from halcyon.web import create_app
+
+_settings = load_settings(os.environ)
+init_schema(_settings.database_url)
+_store = PostgresStore(_settings.database_url)
+_kb_path = os.environ.get(
+    "EIGER_KB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "eiger-kb.sqlite3")
+)
+_kb_for = KBProvider(
+    lambda sid: SQLiteKB(collection=slug(sid), db_path=_kb_path), kb_fixtures.SEED
+)
+if _settings.profile == "production":
+    from halcyon.security.ledger import PostgresBank, init_ledger_schema
+    init_ledger_schema(_settings.database_url)
+    _production_bank = PostgresBank(_settings.database_url)
+
+    def _bank_for(_session_id: str):
+        return _production_bank
+else:
+    _bank_for = BankProvider(bank_fixtures.seed_for)
+_hardened = _settings.mode == "secure" or _settings.profile == "production"
+_core_token = os.environ.get("HALCYON_MCP_CORE_TOKEN", "" if _hardened else "core-token-dev")
+_crm_token = os.environ.get("HALCYON_MCP_CRM_TOKEN", "" if _hardened else "crm-token-dev")
+_core_delegation = os.environ.get("HALCYON_MCP_CORE_DELEGATION_SECRET", "")
+_crm_delegation = os.environ.get("HALCYON_MCP_CRM_DELEGATION_SECRET", "")
+_ollama_gateway_token = os.environ.get("EIGER_OLLAMA_GATEWAY_TOKEN", "")
+if (
+    not _core_token or not _crm_token or _core_token == _crm_token
+    or (_hardened and (
+        _core_token == "core-token-dev" or _crm_token == "crm-token-dev"
+        or len(_core_token) < 32 or len(_crm_token) < 32
+        or not _core_delegation or not _crm_delegation
+        or _core_delegation == _crm_delegation
+        or len(_core_delegation) < 32 or len(_crm_delegation) < 32
+        or _core_delegation in (_core_token, _crm_token)
+        or _crm_delegation in (_core_token, _crm_token)
+        or not _ollama_gateway_token
+        or len(_ollama_gateway_token) < 32
+        or _ollama_gateway_token in (_core_token, _crm_token, _core_delegation, _crm_delegation)
+    ))
+):
+    raise ValueError("Secure deployment requires distinct MCP, delegation, and inference credentials")
+_vault = TokenVault({SERVER_CORE: _core_token, SERVER_CRM: _crm_token})
+_treasury_for = TreasuryProvider(scenarios=treasury_corpus.SCENARIO_KEYS)
+_treasury_kb_for = KBProvider(
+    lambda sid: SQLiteKB(collection=treasury_collection(sid), db_path=_kb_path),
+    treasury_corpus.SEED,
+)
+
+
+def _factory(provider: str | None, model: str | None, api_key: str | None):
+    return build_llm(_settings, provider, model, api_key)
+
+
+def _tool_llm_factory(provider: str | None, model: str | None, api_key: str | None):
+    return build_tool_llm(_settings, provider, model, api_key)
+
+
+# MCP servers are declared in mcp.json (source of truth), with per-server env overrides.
+_mcp_servers = load_mcp_servers(os.environ)
+_core_url = _mcp_servers.get("mcp-core-banking")
+_crm_url = _mcp_servers.get("mcp-crm")
+# Single-process deploys (pure-local dev, a single-container cloud instance) run the same
+# servers in-memory instead of reaching HTTP endpoints — set MCP_IN_PROCESS=1.
+_in_process = os.environ.get("MCP_IN_PROCESS", "").lower() in {"1", "true", "on", "yes"}
+
+if not _in_process and _core_url and _crm_url:
+    logging.getLogger(__name__).info(
+        "mcp_host_factory: http_host over %s / %s (mcp.json / env override)", _core_url, _crm_url
+    )
+    # Bind narrowed locals for closure
+    core_url = _core_url
+    crm_url = _crm_url
+
+    def _mcp_host_factory(session_id: str, settings=_settings):
+        return http_host(core_url, crm_url, _vault, _store, settings, session_id)
+else:
+    # In-memory fallback: run the same servers against this process's own fixtures.
+    logging.getLogger(__name__).warning(
+        "mcp_host_factory: in_memory_host (MCP_IN_PROCESS=%s, core_url=%s, crm_url=%s)",
+        _in_process, _core_url, _crm_url,
+    )
+
+    def _mcp_host_factory(session_id: str, settings=_settings):
+        return in_memory_host(
+            _bank_for(session_id), _vault, crm_fixtures.SEED, _store, settings, session_id
+        )
+
+
+app = create_app(
+    _store, _settings, _factory, _kb_for, _bank_for, _tool_llm_factory, _mcp_host_factory,
+    treasury_for=_treasury_for,
+    treasury_kb_for=_treasury_kb_for,
+)

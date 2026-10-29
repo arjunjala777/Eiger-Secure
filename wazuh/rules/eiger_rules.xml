@@ -1,0 +1,74 @@
+<!-- Wazuh Custom Rules for Eiger AI Defensive Blue-Team Architecture -->
+<group name="eiger_ai,ai_security,owasp_llm">
+
+  <!-- Base rule for Eiger AI events -->
+  <rule id="100100" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="app">^eiger-banking$</field>
+    <description>Eiger AI application event received</description>
+  </rule>
+
+  <!-- Prompt Injection & Jailbreak (OWASP LLM01) -->
+  <rule id="100101" level="12">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">prompt_injection_detected</field>
+    <mitre>
+      <id>T1059</id>
+    </mitre>
+    <description>Critical: LLM prompt injection or jailbreak attempt blocked by input firewall</description>
+  </rule>
+
+  <!-- Llama Guard Safety Classifier Violation -->
+  <rule id="100102" level="10">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">guardrail_violation</field>
+    <description>High: Llama Guard classifier detected safety policy violation in user prompt</description>
+  </rule>
+
+  <!-- Agent Output Data Leakage Prevented (OWASP LLM06) -->
+  <rule id="100103" level="11">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">data_leakage_prevented</field>
+    <mitre>
+      <id>T1005</id>
+    </mitre>
+    <description>High: Agent response blocked by output rail due to sensitive data leakage</description>
+  </rule>
+
+  <!-- MCP Gateway: Malicious Payload in Tool Parameter -->
+  <rule id="100202" level="13">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">mcp_gateway_block</field>
+    <description>Critical: Lasso-style MCP Gateway intercepted malicious argument in tool request</description>
+  </rule>
+
+  <!-- MCP Gateway: DLP Data Redacted -->
+  <rule id="100203" level="6">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">mcp_dlp_sanitized</field>
+    <description>Notice: MCP Gateway DLP masked PII or sensitive token in tool response</description>
+  </rule>
+
+  <!-- NeMo Guardrail Colang Flow Triggered -->
+  <rule id="100301" level="10">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">nemo_rail_triggered</field>
+    <description>High: NVIDIA NeMo Guardrail flow triggered; unauthorized dialog prevented</description>
+  </rule>
+
+  <!-- Unauthorized Financial Attempt / Theft Blocked -->
+  <rule id="100401" level="14">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">unauthorized_financial</field>
+    <mitre>
+      <id>T1565</id>
+    </mitre>
+    <description>Critical: Attempted unauthorized debit or unowned account transfer blocked</description>
+  </rule>
+
+  <rule id="100104" level="8">
+    <if_sid>100100</if_sid>
+    <field name="security.event_type">^guardrail_unavailable$</field>
+    <description>Eiger classifier unavailable; inspect guard mode and readiness</description>
+  </rule>
+</group>

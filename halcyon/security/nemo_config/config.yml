@@ -1,0 +1,7 @@
+models: []
+colang_version: "1.0"
+rails:
+  input:
+    flows: [eiger input rail]
+  output:
+    flows: [eiger output rail]

@@ -1,0 +1,151 @@
+# Eiger — Build Status & Resume Guide
+
+**Last updated:** 2026-08-31.
+
+Companion docs: `README.md` (overview), `OPERATIONS.md` (safe deployment),
+`docs/labs/` (participant, trainer, and QA guides), and each slice's historical
+`docs/specs/*` + `docs/plans/*` record.
+
+> **Documentation convention:** `README.md`, `OPERATIONS.md`, this status guide, and the participant/trainer/test guides in `docs/labs/` describe the current product. Dated specs, plans, e2e checklists, and black-box findings are historical build/evidence records; they intentionally preserve the terminology and interfaces that existed when written.
+
+---
+
+## TL;DR
+
+- **What:** a deliberately vulnerable single-app teaching lab for an instructor-led course on adversarial AI. Fictional AI-neobank **Eiger**; assistant **Iggy**. Attacked across six layers (L0→L5) that grow module by module. Participants **Build / Break / Secure** each layer.
+- **Repo:** `eiger`; default branch: `main`.
+- **Built so far:** **all 8 teaching modules, M1–M8**, plus the S11 treasury-heist capstone. The complete L0→L5 attack surface (chatbot → RAG → agent → MCP → multi-agent → guardrails) has live end-to-end proofs. **The teaching curriculum is code-complete.**
+- **Learner UX:** the 2026-08-27 refresh adds stable browser sessions, plain-language **Vulnerable/Hardened** controls, module objectives, in-panel validation/reset, bounded model requests, and human-readable learner/class progress pages. JSON APIs remain compatible.
+- **Tests:** `341 passed, 5 skipped, 18 deselected`; Ruff + mypy clean. The skips/deselections are gated integration and calibration tests.
+- **UX review:** the learner refresh completed a hands-on browser pass on 2026-08-27. Next: collect user feedback, then finish the remaining Ops/fleet and course-material work.
+
+---
+
+## Development practice
+
+Each module is developed as a vertical slice: committed design and implementation plans,
+test-driven code, whole-change review, a live end-to-end proof, and merge to `main`.
+
+### Load-bearing doctrine (do not route around)
+- **Validate the mechanism, not the model's words.** Every pass/fail is a SQL/query over an **append-only audit log**, never a string match on model output.
+- **One build + `SEC_*` flags.** `HALCYON_MODE = vulnerable | secure` sets a default profile; each `SEC_*` flag gates exactly one small, legible guard. **The diff between vulnerable and secure IS the lesson.**
+- **Append-only log** with `module_reset` markers — validation counts events after the latest reset for `(session, module)`.
+- **Deterministic tests** — every module's logic is testable with stubbed LLM/tool/embedding + in-memory store, no network. Real backends only in the e2e.
+
+---
+
+## Architecture & where things live
+
+`halcyon/` package (FastAPI app; entrypoint `main.py` → `web.create_app`):
+
+| Area | Files | Notes |
+|---|---|---|
+| Config / flags | `config.py` | `Settings` + `load_settings`; process defaults plus per-session overrides for the teaching guards |
+| Reliability spine | `store.py` (InMemory + Postgres via `pg_store.py`), `audit.py`, `progress.py`, `canary.py`, `schema.sql` | append-only log, reset markers, canary detectors |
+| Guards | `guards.py` | all `SEC_*` guards live here (M1 assemble/filter, M2 encode, M3 assemble_rag, M5 authorize_tool_call, M6 desc_hash/quarantine_description/authorize_token_access) |
+| Validators | `validators/m1.py … m8.py`, `validators/chain.py` | each = audit-log query; grading is independent of model wording |
+| LLM | `llm.py` | `LLM.chat` (M1–M4) + `ToolLLM.next_step` (M5); Stub/Ollama/OpenAI/Anthropic |
+| M1/M2 (L0) | `halo.py` | chat turn pipeline; templates/chat.html |
+| M3 (L1 RAG) | `kb.py` (InMemoryKB), `chroma_kb.py` (prod), `rag.py`, `kb_fixtures.py` | KnowledgeBase interface |
+| M4 (supply chain) | `artifacts.py` (loader), `scan_artifact.py` (static scanner), `m4_answers.py`, `labs/m4/` | no LLM; submit-the-finding |
+| M5 (L2 agent) | `bank.py`, `tools.py`, `agent.py` (`run`), `bank_fixtures.py` | tool-calling agent |
+| M6 (L3 MCP) | `mcp_servers/{core_banking,crm}.py` (real MCP SDK servers), `mcp_host.py` (async client/host — guards at call sites), `mcp_vault.py`, `crm_fixtures.py`, `mcp_deploy.py` (streamable-HTTP apps), `agent.run_mcp` | 2 real MCP servers behind the agent; in-memory transport in tests, streamable-HTTP in deploy |
+| M7 (L4 multi-agent) | `dispute_pipeline.py` (`run_dispute`, real compiled LangGraph `StateGraph`: intake→risk→action→supervisor), `dispute_fixtures.py`, `validators/m7.py` | reuses `Bank`/`bank_fixtures`; deterministic `StubToolLLM` nodes in tests |
+| M8 (L5 production guardrails & evasion) | `guards.canonicalize` / `guards.guardrail_check` (in `guards.py`), `halo.guarded_turn` (in `halo.py`), `capstone.py`, `validators/m8.py` | guided guardrail exercise; `GET /capstone` remains a legacy read-only residual-risk API and is not the Treasury Heist |
+| Treasury Heist capstone | `source_browser.py`, `treasury_state.py`, `treasury_corpus.py`, `treasury_agent.py`, `validators/chain.py` | separate integrated challenge: leaked ingest key → retrieved poisoned policy → transfer to the assigned account |
+| UI | `templates/chat.html`, `templates/reach.html`, `templates/progress.html`, `templates/board.html` | readiness, guided module panels, per-learner progress, and human-readable class board |
+
+**Endpoints:** `GET /health` · `GET /`, `/chat`, `/progress`, `/attack-board` (learner UI; `/board` is JSON) · `POST /api/chat` (M1/M2) · `POST /api/kb` + `POST /api/ask` (M3) · `POST /submit/m4` (M4) · `POST /api/agent` (M5) · `POST /api/mcp-agent` (M6) · `POST /api/dispute` (M7) · `POST /api/guarded-chat` (M8) · `GET /capstone` (legacy residual-risk JSON) · `/source/*`, `/ingest/*`, `/treasury/brief`, `POST /api/treasury/review` (Treasury Heist) · `GET /validate/{module}` · `POST /reset/{module}`.
+
+**`create_app(...)`** has seven required dependencies (store, settings, model factories, per-session KB/bank, MCP host) plus optional `session_state`, `treasury_for`, and `treasury_kb_for` injections used by the learner UX and Treasury Heist. `main.py` supplies the production providers; deterministic tests inject in-memory implementations.
+
+**Flags:** `HALCYON_MODE` + `SEC_SYSTEM_PROMPT_HARDENING` (M1/M2) · `SEC_INPUT_FILTER` (M1) · `SEC_OUTPUT_ENCODING` (M2) · `SEC_RAG_PROVENANCE` (M3) · `SEC_ARTIFACT_VERIFICATION` (M4) · `SEC_TOOL_SCOPE_ENFORCEMENT` (M5) · `SEC_MCP_DESC_PINNING` + `SEC_MCP_TOKEN_SCOPING` (M6) · `SEC_INTER_AGENT_AUTH` (M7) · `SEC_GUARDRAILS` (M8).
+
+---
+
+## What each module is (attack · flag · validator events)
+
+| M | Layer | Core attack | Stretch | Flag(s) | Validator events (core / stretch) | e2e proof |
+|---|---|---|---|---|---|---|
+| M1 | L0 chatbot | direct prompt injection → leak operator honeytoken `HALCYON-OPS-7731` | policy override (marker `HALO-ACT-OVERRIDE`, non-contiguous in prompt) | SYSTEM_PROMPT_HARDENING, INPUT_FILTER | `internal_token_disclosed` / `policy_override` | live (llama3.1:8b, translate-to-French bypass) |
+| M2 | L0 | stored XSS via app-echoed display name | system-prompt disclosure (canary `SYS-CANARY-M2-3390`, vuln-prompt only) | OUTPUT_ENCODING (escape + nonce-CSP) | `xss_beacon` / `system_prompt_disclosed` | live (real headless browser fired the beacon) |
+| M3 | L1 RAG | indirect injection via unprovenance retrieval (marker `RAG-OWNED-7788`) | restricted-doc retrieval | RAG_PROVENANCE (quarantine user chunks + access scope) | `poisoned_chunk_in_context` ∧ `rag_injection_fired` / `restricted_doc_retrieved` | live (real ChromaDB + llama3.1:8b) |
+| M4 | ML supply chain | find poisoned model artifact (pickle RCE) via static scanner | find vulnerable dep (`PyYAML==5.3.1`, CVE-2020-14343) | ARTIFACT_VERIFICATION (safetensors-only + hash-pin) | `malicious_artifact_identified` / `vulnerable_dependency_identified` | verified; RCE demo instructor-only (`docs/m4-instructor-demo.md`) |
+| M5 | L2 agent | confused-deputy: move money to an unowned account | `update_email` on an unowned account (hijack) | TOOL_SCOPE_ENFORCEMENT (per-action ownership authz) | `unauthorized_tool_call` / `unauthorized_account_modification` | live (llama3.1:8b Ollama tool-calling, 4/4) |
+| M6 | L3 MCP | tool-description **poisoning** — a hidden instruction in a CRM tool's description induces an unintended cross-server data call | **rug pull** (description mutates post-approval) · **token theft** (cross-server token read) | DESC_PINNING (pin+verify+quarantine descriptions) + TOKEN_SCOPING (per-server token isolation, enforced host-side) | `mcp_poisoned_invocation` / `mcp_desc_mutation_accepted` ∨ `token_read` | live (real llama3.1:8b over real streamable-HTTP MCP: vuln core:pass → secure core:fail; gated `RUN_MCP_HTTP_TESTS` HTTP e2e). **BYOK** needed for the autonomous poison-following variant (llama won't chain it). |
+| M7 | L4 multi-agent | cascading injection: dispute-text payload propagates across implicitly-trusted agents → action agent auto-approves a fraudulent refund to an unowned account | supervisor rubber-stamps the fraudulent action | INTER_AGENT_AUTH (sign+verify inter-agent msgs · quarantine untrusted dispute text · supervisor provenance check) | `inter_agent_injection_propagated` ∧ `unauthorized_approval` / `supervisor_provenance_bypassed` | live (real graph; vuln core:pass → secure core:fail) |
+| M8 | L5 guardrail | guardrail evasion: an obfuscated (leetspeak/unicode/zero-width) payload bypasses the naive input filter and re-lands the M1 operator-token leak | harden & re-test: same payload blocked once `SEC_GUARDRAILS` is on | GUARDRAILS (canonicalize input before blocklist match + complete decision logging) | `guardrail_bypassed` / `guardrail_hardened_block` | live (real llama; vuln core:pass → secure core:fail) |
+
+## Run / test / deploy
+
+```bash
+cd eiger
+uv run pytest -q                      # 341 passed, 5 skipped, 18 deselected
+uv run ruff check . && uv run mypy halcyon
+# Local full stack (now 5 services: web, db, ollama, mcp-core-banking, mcp-crm):
+docker compose up -d --build
+docker compose exec ollama ollama pull llama3.1:8b   # first run
+open http://localhost:8000/
+# Postgres integration test:   TEST_DATABASE_URL=... uv run pytest tests/test_store_postgres.py
+# ChromaDB integration test:   RUN_CHROMA_TESTS=1 uv run pytest tests/test_chroma_kb.py
+# MCP-over-HTTP integration:   RUN_MCP_HTTP_TESTS=1 uv run pytest tests/test_mcp_http.py   # real streamable-HTTP MCP e2e
+```
+
+See `OPERATIONS.md` for safe local and isolated classroom deployment guidance. The ChromaDB embedding model is baked into the image; M5 agent + M3 RAG both work keyless via Ollama.
+
+---
+
+## M6 — MCP security (L3) — DONE (S6, merged 2026-07-18)
+
+Introduced **real MCP SDK servers as in-product targets** (`mcp-core-banking`, `mcp-crm`) behind the Halo agent via an async `MCPHost` client layer where every guard lives at its call sites. Spec/plan: `docs/specs/2026-07-13-halcyon-s6-m6-mcp-security-design.md` + `docs/plans/2026-07-13-halcyon-s6-m6-mcp-security.md`. e2e evidence: `docs/e2e/2026-07-18-s6-m6-mcp-checklist.md`.
+
+- **Built:** poisoning (core) + rug pull + token theft (stretch). **Shadowing deliberately deferred** (both flags already have a real guard without it).
+- **Transport:** real MCP over the **SDK in-memory transport** in deterministic tests; real **streamable-HTTP** in deploy + a gated e2e (`RUN_MCP_HTTP_TESTS=1`). Same server code both paths.
+- **Guards (host-side, so they grade identically on both transports):** `SEC_MCP_DESC_PINNING` pins+verifies+quarantines descriptions (kills rug pull + poisoning); `SEC_MCP_TOKEN_SCOPING` isolates per-server tokens in `MCPHost.call` (kills token theft).
+- **Grading:** `mcp_poisoned_invocation` (core) / `mcp_desc_mutation_accepted` ∨ `token_read` (stretch) — all recorded host-side against the audit log, model-word-independent.
+- **Live e2e proven:** real llama3.1:8b over real HTTP MCP → vuln `core:pass` → flip → secure `core:fail`. **Caveat:** llama (keyless floor) won't *autonomously* chain the poisoned tool-description instruction; the autonomous attack reproduces with **BYOK** (M6's intended tier). Mechanism otherwise proven by deterministic tests + the gated HTTP e2e.
+
+## M7 — multi-agent (L4) — DONE (S7)
+
+Introduced a real **LangGraph** fraud/dispute pipeline (`intake → risk → action → supervisor`, a compiled `StateGraph`) as the new attack surface: **cascading injection** — a customer-supplied dispute-text payload propagates across implicitly-trusted agents, and the downstream action agent auto-approves a fraudulent refund to an account (`acct-attacker`) the session doesn't own. Stretch: the supervisor rubber-stamps the fraudulent action instead of catching it. **Merged to `main`** (2026-07-18, `2d5c5de`); live e2e proven both directions (vuln core:pass → secure core:fail, autonomous with keyless llama).
+
+- **Guard:** `SEC_INTER_AGENT_AUTH` bundles three things — HMAC sign+verify on inter-agent messages, M3-style quarantine of untrusted customer dispute-text, and a supervisor-side provenance + `authorize_approval` ownership check.
+- **Grading:** `inter_agent_injection_propagated` ∧ `unauthorized_approval` (core) / `supervisor_provenance_bypassed` (stretch) — audit-log events, model-word-independent.
+- **Surface:** `POST /api/dispute {session_id, dispute_text, account, amount, provider?, model?, api_key?}` → `{decision, transcript}`. No new container or port; it reuses `Bank`/`bank_fixtures` in the existing web service.
+- Deterministic tests use stubbed `StubToolLLM` nodes on the real compiled graph — no network in the suite.
+- e2e checklist scaffolded at `docs/e2e/2026-07-18-s7-m7-multi-agent-checklist.md` (live-run fields to be filled at e2e time).
+
+## M8 — production guardrails & evasion (L5) — DONE (S8)
+
+**All 8 teaching modules are complete (L0→L5).** M8 is the final guided layer: guardrail evasion as the 8th attack vector, designed for 25–35 minutes. The hardened retest is graded; punctuation/homoglyph/semantic bypass work is an ungraded residual-risk bonus. **Merged to `main`** (2026-07-18, `282dce8`); live e2e proven both directions (vulnerable core:pass → hardened core:fail on an identical leetspeak payload; guardrail grading is deterministic/model-independent).
+
+- **Core attack:** an obfuscated payload (leetspeak `P4RS3LT0NGV3` / unicode / zero-width) bypasses a naive raw-string input filter and re-lands the M1 operator-token leak through the new `POST /api/guarded-chat` surface.
+- **Guard:** `SEC_GUARDRAILS` gates `guards.canonicalize()` (de-leetspeak → NFKC → strip zero-width → lowercase) applied *before* the blocklist match. Off (vulnerable) = raw-only match, bypassable by any obfuscation; on (secure) = canonical match, robust to it. `guards.guardrail_check` returns a `GuardrailDecision(allow, event)`; `halo.guarded_turn` fronts the existing M1 `handle_turn` pipeline with it (module `"m8"`).
+- **Grading:** `guardrail_bypassed` (core — obfuscated payload slipped through) / `guardrail_hardened_block` (stretch — harden and re-test: the same payload gets blocked once the guard is on) — both audit-log events, model-word-independent, via `validators/m8.py`.
+- **Legacy risk API:** `GET /capstone?session=` is a **read-only** M1–M8 residual-risk JSON view (`capstone.py::residual_risk`). It remains for API compatibility but is not the learner capstone.
+- **Surface:** `POST /api/guarded-chat` reuses the existing `ChatIn` model + `llm_factory` (same shape as `/api/chat`) and M1's honeytoken/canary machinery.
+- garak/PyRIT are kept as a documented **external** "point your scanner at the live API" exercise — not built in (out of scope for this teaching lab).
+
+## Treasury Heist capstone — DONE (S11)
+
+The separate `chain` challenge combines reconnaissance, secret exposure, key-gated policy ingestion, RAG retrieval competition, prompt injection, and a tool-mediated transfer. Each participant gets an isolated scenario, ingest key, policy collection, and attacker account. The validator passes only when funds reach that assigned account. The Capstone tab is the supported learner surface.
+
+**Next up:** user feedback, then the **Ops fleet slice** (22 container-per-participant fleet, per-participant MCP isolation, restricted DB role, faster container start) and remaining course materials.
+
+---
+
+## Deferred cleanups (non-blocking; from the ledger)
+
+None block the course; revisit opportunistically or during the Ops slice.
+
+- **Ops-slice items:** `/health` + `/` Ollama/MCP probes are now **cached (5s TTL)**; add a restricted DB role before the M4/M6 RCE labs share Postgres; improve Dockerfile dependency-layer caching; invoke the existing environment directly at web startup.
+- **M6-specific (fast-follow, tied to per-participant MCP isolation):** the CRM rug-pull "benign-at-approval" illusion is a **process-global** `state["lists"]` counter — on a *shared* HTTP `mcp-crm` it permanently mutates after the first-ever `list_tools`, and `/reset/m6` doesn't reset it (grading stays correct in both modes; only the demo narrative degrades on a shared container). Fixes when the Ops slice gives each participant their own MCP containers, or add a per-session/reset counter hook. Also: `mcp_poisoned_invocation` attribution is deliberately coarse (any served poison arms the next sensitive core call — mechanism-based, model-word-independent); `build_*_server` carry unused `bank`/`vault` params (signature symmetry); `quarantine_description` is sentence-granular (imperfect teaching guard, like M1/M3).
+- **Small code tidies:** `pg_store` duplicates the `"module_reset"` literal + redundant `conn.commit()`; `store.append_event` can forge a `module_reset` (add a guard now that reset endpoints exist); M1 input filter + M3 injection classifier are deliberately imperfect (teaching guards, but tunable); `build_llm` `provider="remote"` hardcodes OpenAI; scanner doesn't inspect old-style `INST`/`OBJ` opcodes; `Bank.debit` unused (no funding-source account); `agent.run`'s `module` param unused (m5 hardcoded in `tools.execute`).
+- **Verification gaps:** BYOK (OpenAI/Anthropic) providers for both chat and tool-calling are wire-format-correct (claude-api-verified) but only smoke-tested with a real key at Day-2 time — do a live BYOK check when a key is available.
+- **M7-specific (minor):** `_execute_refund` records `unauthorized_approval` for a nonexistent target account (`acct-attacker`) then no-ops the credit, consistent with the same pattern in M5's `tools.py`; harmless — the mechanism-based grading is still correct.
+
+---
+
+## Fixed grading identifiers
+
+- Honeytoken/markers (canaries): `HALCYON-OPS-7731` (M1), `HALO-ACT-OVERRIDE` (M1 stretch), `SYS-CANARY-M2-3390` (M2), `RAG-OWNED-7788` (M3), poisoned-artifact sha256 in `m4_answers.py` (M4). M6 has no fixed token — the attack payload is the `POISON_CLAUSE` in `mcp_servers/crm.py` (the CRM `get_customer` description); tools are host-qualified `"<server>__<tool>"` (e.g. `core_banking__get_account_details`).
